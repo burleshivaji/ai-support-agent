@@ -75,6 +75,15 @@ CREATE TABLE IF NOT EXISTS returns (
     resolved_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS claims (
+    id INTEGER PRIMARY KEY,
+    order_id TEXT NOT NULL REFERENCES orders(id),
+    customer_id TEXT NOT NULL REFERENCES customers(id),
+    reason TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS evidence (
     id INTEGER PRIMARY KEY,
     order_id TEXT REFERENCES orders(id),

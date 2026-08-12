@@ -87,6 +87,23 @@ def main():
     fails += 0 if ok else 1
     print(f"{'OK  ' if ok else 'FAIL'} ORD-1002 opened without photo   -> blocked, asks for photos")
 
+    # Story change: denied on one account, then a competing one. Escalate.
+    conn.execute("INSERT INTO claims (order_id, customer_id, reason, decision, created_at) "
+                 "VALUES ('ORD-1011', 'CUST-011', 'STOLEN_AFTER_DELIVERY', 'DENY', '2026-01-01')")
+    order = dict(conn.execute("SELECT * FROM orders WHERE id='ORD-1011'").fetchone())
+    order["final_sale"] = bool(order["final_sale"])
+    cust = dict(conn.execute("SELECT * FROM customers WHERE id='CUST-011'").fetchone())
+    v = evaluate_refund(conn, order, cust, "DAMAGED_OR_DEFECTIVE")
+    ok = v["decision"] == "ESCALATE" and v["rule"] == "story_changed"
+    fails += 0 if ok else 1
+    print(f"{'OK  ' if ok else 'FAIL'} ORD-1011 story changed          -> {v['decision']:8} {v['rule']}")
+
+    # Same reason repeated is not a story change, just a retry.
+    v = evaluate_refund(conn, order, cust, "STOLEN_AFTER_DELIVERY")
+    ok = v["rule"] == "theft_after_delivery"
+    fails += 0 if ok else 1
+    print(f"{'OK  ' if ok else 'FAIL'} ORD-1011 same reason again      -> {v['decision']:8} {v['rule']}")
+
     # Final sale item reported faulty, with a photo: approved, and it still
     # has to come back and pass inspection.
     conn.execute("INSERT INTO evidence (order_id, customer_id, filename, uploaded_at) "

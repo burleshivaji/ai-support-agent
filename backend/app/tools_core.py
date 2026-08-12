@@ -175,6 +175,12 @@ def check_refund_eligibility(order_id: str, customer_email: str, reason: str) ->
         return result
 
     verdict = evaluate_refund(conn, _order_dict(order), dict(cust), reason)
+    # Record what was claimed so a later contradicting claim can be caught.
+    conn.execute(
+        "INSERT INTO claims (order_id, customer_id, reason, decision, created_at) "
+        "VALUES (?,?,?,?,?)",
+        (order["id"], cust["id"], reason, verdict["decision"], _now()))
+    conn.commit()
     conn.close()
 
     for c in verdict["checks"]:

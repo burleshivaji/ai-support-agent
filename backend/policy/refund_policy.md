@@ -89,18 +89,32 @@ Any refund above $1,000 must be escalated to a human reviewer. The agent
 never approves it directly. Verified company or carrier fault bypasses this
 rule.
 
-## 10. Suspicious activity
+## 10. Conflicting claims
+
+A change of mind, a damaged item, a package that never arrived and a
+package stolen after delivery are competing accounts of the same order.
+Only one of them can be true.
+
+If a customer is denied on one of these and then claims another for the
+same order, the agent does not decide between the two accounts and does not
+accuse the customer. It states plainly what it was told first, what it is
+being told now, and escalates to a human reviewer.
+
+Verified company or carrier fault is evidence rather than an account, so it
+still applies regardless.
+
+## 11. Suspicious activity
 
 Customers with 5 or more confirmed suspicious-refund flags are blocked from
 automated refunds and the request is denied. Verified company or carrier
 fault overrides this block.
 
-## 11. Duplicate protection
+## 12. Duplicate protection
 
 An order that has already been refunded is never refunded again. Every
 refund is written with an idempotency key so retries cannot move money twice.
 
-## 12. Rule priority
+## 13. Rule priority
 
 1. Verified facts first: duplicate check, then company/carrier fault.
 2. Company/carrier fault overrides final sale, the 14-day window, the

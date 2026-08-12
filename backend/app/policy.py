@@ -24,6 +24,15 @@ REASONS = [
     "OTHER",
 ]
 
+# Competing accounts of what happened to the same item. A customer can only
+# truthfully claim one of these per order.
+EXCLUSIVE_REASONS = (
+    "CHANGE_OF_MIND",
+    "DAMAGED_OR_DEFECTIVE",
+    "NOT_RECEIVED",
+    "STOLEN_AFTER_DELIVERY",
+)
+
 
 def _days_since(iso_date: str) -> int:
     d = datetime.fromisoformat(iso_date).date()
@@ -109,6 +118,28 @@ def evaluate_refund(conn, order, customer, reason: str) -> dict:
                        [{"destination": _original_destination(order), "amount": amount}],
                        fulfillment="immediate")
     check("carrier_fault", False, "No verified company/carrier fault on this order")
+
+    # These reasons are competing accounts of what happened to the same item,
+    # so a customer cannot truthfully claim two of them. Switching to a second
+    # one after the first was denied is a story change, and a person decides
+    # from here - the agent neither accepts it nor calls the customer a liar.
+    if reason in EXCLUSIVE_REASONS:
+        prior = conn.execute(
+            "SELECT reason FROM claims WHERE order_id = ? AND decision = 'DENY' "
+            "AND reason != ? AND reason IN (%s) ORDER BY id DESC LIMIT 1"
+            % ",".join("?" * len(EXCLUSIVE_REASONS)),
+            (order["id"], reason, *EXCLUSIVE_REASONS)).fetchone()
+        if prior:
+            check("consistent_claim", False,
+                  f"Customer first claimed {prior['reason']} on this order and was denied, "
+                  f"now claims {reason}")
+            return escalate("story_changed",
+                            f"The customer first told us this was a {prior['reason'].lower().replace('_', ' ')} "
+                            f"case, that was denied, and they are now describing it as "
+                            f"{reason.lower().replace('_', ' ')}. Those cannot both be true, so this "
+                            "needs a human to review. Do not accuse the customer, and do not "
+                            "process the second claim automatically.")
+        check("consistent_claim", True, "No conflicting earlier claim on this order")
 
     # Rule 6: pre-shipment cancellation.
     if order["status"] == "PROCESSING" and order["shipment_status"] == "NOT_SHIPPED":
