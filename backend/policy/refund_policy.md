@@ -54,8 +54,15 @@ follows the return and inspection process in section 4.
 
 ## 6. Final sale
 
-Final sale items are not refundable for change of mind or damage caused by
-the customer. Verified company or carrier fault overrides final sale.
+Final sale items are not refundable for a change of mind.
+
+Final sale does not remove cover for a faulty product. An item that arrived
+damaged or defective is still refundable under section 5, because that is
+not the customer's fault. The claim still needs a photo and the returned
+item still has to pass facility inspection, and inspection is what catches
+damage the customer caused - that is rejected and no refund is issued.
+
+Verified company or carrier fault also overrides final sale.
 
 ## 7. Orders that have not been delivered
 

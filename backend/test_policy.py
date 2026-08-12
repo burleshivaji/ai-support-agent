@@ -17,6 +17,8 @@ CASES = [
     ("ORD-1002", "STOLEN_AFTER_DELIVERY", "DENY", "theft_after_delivery"),
     ("ORD-1003", "CHANGE_OF_MIND", "APPROVE", "high_spend_late_return"),
     ("ORD-1004", "CHANGE_OF_MIND", "DENY", "final_sale"),
+    # Final sale still covers a faulty product; the photo is the next step.
+    ("ORD-1004", "DAMAGED_OR_DEFECTIVE", "EVIDENCE_REQUIRED", "evidence_required"),
     ("ORD-1005", "CHANGE_OF_MIND", "DENY", "window_expired"),
     ("ORD-1006", "DAMAGED_OR_DEFECTIVE", "EVIDENCE_REQUIRED", "evidence_required"),
     ("ORD-1007", "CHANGE_OF_MIND", "APPROVE", "standard_return"),
@@ -84,6 +86,18 @@ def main():
     ok = r3.get("created") is False and "photo" in r3.get("message", "").lower()
     fails += 0 if ok else 1
     print(f"{'OK  ' if ok else 'FAIL'} ORD-1002 opened without photo   -> blocked, asks for photos")
+
+    # Final sale item reported faulty, with a photo: approved, and it still
+    # has to come back and pass inspection.
+    conn.execute("INSERT INTO evidence (order_id, customer_id, filename, uploaded_at) "
+                 "VALUES ('ORD-1004', 'CUST-004', 'sneaker_fault.jpg', '2026-01-01')")
+    order = dict(conn.execute("SELECT * FROM orders WHERE id='ORD-1004'").fetchone())
+    order["final_sale"] = bool(order["final_sale"])
+    cust = dict(conn.execute("SELECT * FROM customers WHERE id='CUST-004'").fetchone())
+    v = evaluate_refund(conn, order, cust, "DAMAGED_OR_DEFECTIVE")
+    ok = v["decision"] == "APPROVE" and v["rule"] == "damaged_or_defective"
+    fails += 0 if ok else 1
+    print(f"{'OK  ' if ok else 'FAIL'} ORD-1004 final sale but faulty  -> {v['decision']:8} {v['rule']}")
 
     # Damage claim again, now with a photo attached: should approve.
     conn.execute("INSERT INTO evidence (order_id, customer_id, filename, uploaded_at) "

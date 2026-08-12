@@ -180,13 +180,20 @@ def evaluate_refund(conn, order, customer, reason: str) -> dict:
         return escalate("delivery_dispute",
                         "Delivery cannot be confirmed against the registered address. Escalating for review.")
 
-    # Rule 5: final sale.
-    if order["final_sale"]:
+    # Rule 5: final sale. It blocks change-of-mind returns, but not an item
+    # that arrived damaged or defective - that is our fault, not the
+    # customer's. Facility inspection is what catches customer-caused damage.
+    if order["final_sale"] and reason != "DAMAGED_OR_DEFECTIVE":
         check("final_sale", False, "Item is marked final sale")
         return deny("final_sale",
-                    "This item was purchased as final sale. It is not refundable except for "
-                    "verified company or carrier fault.")
-    check("final_sale", True, "Item is not final sale")
+                    "This item was purchased as final sale. It is not refundable for a "
+                    "change of mind. It is still covered if it arrived damaged or "
+                    "defective, or if there was a company or carrier fault.")
+    if order["final_sale"]:
+        check("final_sale", True,
+              "Item is final sale, but final sale does not block a damaged or defective claim")
+    else:
+        check("final_sale", True, "Item is not final sale")
 
     days = _days_since(order["delivered_date"])
 
