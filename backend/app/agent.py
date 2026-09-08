@@ -5,7 +5,7 @@ Conversation memory is checkpointed per session with MemorySaver.
 import os
 import time
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
@@ -16,6 +16,11 @@ from . import tools_core
 from .logbus import log_event
 
 from .prompts import CHAT_PROMPT as SYSTEM_PROMPT
+
+# Cost and safety limits for the LLM calls.
+MAX_HISTORY_TOKENS = 6000    # conversation kept per turn, older messages dropped
+MAX_REPLY_TOKENS = 600       # cap on a single reply
+LLM_TIMEOUT_SECONDS = 30     # a hung call fails and retries instead of blocking
 
 
 # LangGraph-facing wrappers around the shared core tools.
@@ -88,15 +93,41 @@ def _get_llm():
     global _llm
     if _llm is None:
         model = os.getenv("CHAT_MODEL", "gpt-4o-mini")
-        _llm = ChatOpenAI(model=model, temperature=0).bind_tools(TOOLS)
+        _llm = ChatOpenAI(model=model, temperature=0,
+                          max_tokens=MAX_REPLY_TOKENS, timeout=LLM_TIMEOUT_SECONDS,
+                          max_retries=0).bind_tools(TOOLS)
     return _llm
+
+
+def _trim(messages):
+    """Keep the conversation inside a token budget. Without this the whole
+    history is re-sent every turn and cost grows with the conversation.
+    Trimming starts on a human message so a tool result is never sent
+    without the assistant message that asked for it."""
+    return trim_messages(
+        messages,
+        max_tokens=MAX_HISTORY_TOKENS,
+        strategy="last",
+        token_counter=_get_llm(),
+        start_on="human",
+        include_system=False,
+        allow_partial=False,
+    )
 
 
 def agent_node(state: MessagesState):
     """One LLM step, with retry on transient API failures."""
-    messages = [SystemMessage(SYSTEM_PROMPT)] + state["messages"]
+    history = _trim(state["messages"])
+    dropped = len(state["messages"]) - len(history)
+    if dropped > 0:
+        log_event("trim", {"dropped_messages": dropped,
+                           "kept_messages": len(history),
+                           "budget_tokens": MAX_HISTORY_TOKENS})
+    messages = [SystemMessage(SYSTEM_PROMPT)] + history
+
     last_error = None
     for attempt in range(1, 4):
+        started = time.monotonic()
         try:
             response = _get_llm().invoke(messages)
             break
@@ -108,6 +139,15 @@ def agent_node(state: MessagesState):
     else:
         log_event("error", {"stage": "llm_call", "error": str(last_error)[:300]})
         raise last_error
+
+    usage = getattr(response, "usage_metadata", None) or {}
+    log_event("llm_call", {
+        "model": os.getenv("CHAT_MODEL", "gpt-4o-mini"),
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+        "history_messages": len(history),
+    })
 
     if response.tool_calls:
         log_event("assistant_message", {

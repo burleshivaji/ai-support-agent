@@ -142,6 +142,9 @@ body {
 .log-badge.t-retry { background: #ffedd5; color: #c2410c; }
 .log-badge.t-error { background: #fee2e2; color: #b91c1c; }
 .log-badge.voice { background: #ccfbf1; color: #0f766e; }
+.log-badge.t-llm_call { background: #ede9fe; color: #6d28d9; }
+.log-badge.t-trim { background: #f1f5f9; color: #475569; }
+.log-badge.t-rate_limited { background: #ffe4e6; color: #be123c; }
 .log-text { word-break: break-word; }
 .log-row.t-error .log-text, .log-row.t-retry .log-text { color: var(--red); }
 

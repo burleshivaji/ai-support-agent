@@ -8,8 +8,10 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 import re
 import time
+from collections import defaultdict
 
-from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (FastAPI, File, Form, HTTPException, Request, UploadFile,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -25,6 +27,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Simple in-memory rate limit. Enough to stop one client hammering the
+# LLM endpoints; a real deployment would use Redis so limits are shared
+# across processes.
+RATE_LIMITS = {"chat": (20, 60), "upload": (10, 60), "tool": (60, 60)}
+_hits: dict[str, list[float]] = defaultdict(list)
+
+
+def enforce_rate_limit(bucket: str, client: str):
+    limit, window = RATE_LIMITS[bucket]
+    key = f"{bucket}:{client}"
+    now = time.monotonic()
+    recent = [t for t in _hits[key] if now - t < window]
+    if len(recent) >= limit:
+        retry_in = int(window - (now - recent[0])) + 1
+        logbus.log_event("rate_limited", {"bucket": bucket, "retry_after_s": retry_in})
+        raise HTTPException(429, f"Too many requests. Try again in {retry_in} seconds.",
+                            headers={"Retry-After": str(retry_in)})
+    recent.append(now)
+    _hits[key] = recent
+
+
+def client_key(request: Request, session_id: str) -> str:
+    return f"{request.client.host if request.client else 'unknown'}|{session_id}"
 
 
 @app.on_event("startup")
@@ -43,9 +70,12 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
     logbus.current_session.set(req.session_id)
     logbus.current_channel.set("chat")
+    enforce_rate_limit("chat", client_key(request, req.session_id))
+    if len(req.message) > 2000:
+        raise HTTPException(413, "That message is too long.")
     try:
         reply = await asyncio.to_thread(run_turn, req.session_id, req.message)
     except Exception as exc:
@@ -62,24 +92,75 @@ class ToolRequest(BaseModel):
 
 
 @app.post("/api/realtime/tool")
-async def realtime_tool(req: ToolRequest):
+async def realtime_tool(req: ToolRequest, request: Request):
     """Tool execution for the voice pipeline. Same core tools, same logs."""
     logbus.current_session.set(req.session_id)
     logbus.current_channel.set("voice")
+    enforce_rate_limit("tool", client_key(request, req.session_id))
     result = await asyncio.to_thread(tools_core.execute_tool, req.name, req.arguments)
     return {"result": result}
 
 
+# Upload limits. Photos only, read in chunks so a large file is rejected
+# while streaming instead of being loaded into memory first.
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+CHUNK_BYTES = 64 * 1024
+ALLOWED_UPLOAD_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+IMAGE_SIGNATURES = (
+    b"\xff\xd8\xff",          # jpeg
+    b"\x89PNG\r\n\x1a\n",     # png
+    b"GIF87a", b"GIF89a",     # gif
+)
+
+
+def _looks_like_image(head: bytes) -> bool:
+    if head.startswith(IMAGE_SIGNATURES):
+        return True
+    return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+
+
 @app.post("/api/upload")
-async def upload(session_id: str = Form(...), file: UploadFile = File(...)):
+async def upload(request: Request, session_id: str = Form(...),
+                 file: UploadFile = File(...)):
     """Damage photo upload from the chat. The agent links it to an order
     with the attach_evidence tool afterwards."""
     logbus.current_session.set(session_id)
     logbus.current_channel.set("chat")
-    base = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "photo")
+    enforce_rate_limit("upload", client_key(request, session_id))
+
+    if file.content_type not in ALLOWED_UPLOAD_TYPES:
+        raise HTTPException(415, "Only JPEG, PNG, WebP or GIF images can be uploaded.")
+
+    base = re.sub(r"[^A-Za-z0-9._-]", "_", Path(file.filename or "photo").name)[:80]
     stored = f"{int(time.time())}_{base}"
     dest = tools_core.UPLOAD_DIR / stored
-    dest.write_bytes(await file.read())
+
+    written = 0
+    head = b""
+    try:
+        with dest.open("wb") as out:
+            while chunk := await file.read(CHUNK_BYTES):
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        413, f"File is too large. The limit is "
+                             f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
+                if not head:
+                    head = chunk[:12]
+                    if not _looks_like_image(head):
+                        raise HTTPException(415, "That file is not a valid image.")
+                out.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(500, "The upload could not be saved.")
+
+    if written == 0:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, "The file is empty.")
+
     conn = get_conn()
     conn.execute(
         "INSERT INTO evidence (order_id, customer_id, filename, session_id, uploaded_at) "
@@ -89,7 +170,7 @@ async def upload(session_id: str = Form(...), file: UploadFile = File(...)):
     conn.close()
     logbus.log_event("tool_result", {"tool": "photo_upload",
                                      "result": {"stored_as": stored,
-                                                "size_bytes": dest.stat().st_size}})
+                                                "size_bytes": written}})
     return {"stored_as": stored}
 
 

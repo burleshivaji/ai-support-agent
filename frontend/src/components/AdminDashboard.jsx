@@ -10,6 +10,9 @@ const TYPE_LABELS = {
   decision: 'DECISION',
   retry: 'RETRY',
   error: 'ERROR',
+  llm_call: 'LLM',
+  trim: 'TRIM',
+  rate_limited: 'RATE LIMIT',
 }
 
 function summarize(log) {
@@ -43,6 +46,12 @@ function summarize(log) {
       if (c.stage === 'escalated')
         return `escalated ${c.order_id || ''} → ticket ${c.ticket}`
       return JSON.stringify(c)
+    case 'llm_call':
+      return `${c.model} · ${c.duration_ms}ms · ${c.input_tokens ?? '?'} in / ${c.output_tokens ?? '?'} out · ${c.history_messages} msgs in context`
+    case 'trim':
+      return `history trimmed: dropped ${c.dropped_messages} older messages, kept ${c.kept_messages} (budget ${c.budget_tokens} tokens)`
+    case 'rate_limited':
+      return `rate limit hit on ${c.bucket}, retry after ${c.retry_after_s}s`
     case 'retry':
       return `LLM call attempt ${c.attempt} failed: ${c.error}`
     case 'error':
